@@ -1,841 +1,536 @@
-SET SQL_MODE = "NO_AUTO_VALUE_ON_ZERO";
-START TRANSACTION;
-SET time_zone = "+00:00";
-
-
-/*!40101 SET @OLD_CHARACTER_SET_CLIENT=@@CHARACTER_SET_CLIENT */;
-/*!40101 SET @OLD_CHARACTER_SET_RESULTS=@@CHARACTER_SET_RESULTS */;
-/*!40101 SET @OLD_COLLATION_CONNECTION=@@COLLATION_CONNECTION */;
-/*!40101 SET NAMES utf8mb4 */;
-
+-- V1__init_schema.sql
+-- E-Commerce Backend - Spring Boot + Spring Security + JWT + MySQL 8+
+-- Thiết kế lại từ schema Laravel cũ để phù hợp với Spring Boot/JPA.
 --
--- Database: `ecommerce-schema`
---
+-- Quy ước chính:
+-- 1. Không dùng các bảng Laravel: cache, jobs, sessions, migrations, password_reset_tokens...
+-- 2. Enum lưu dạng VARCHAR + CHECK để map bằng @Enumerated(EnumType.STRING).
+-- 3. Mọi Product phải có ít nhất 1 ProductVariant; giá và tồn kho nằm ở ProductVariant.
+-- 4. Cart có thể chứa nhiều vendor, nhưng mỗi lần checkout chỉ checkout 1 vendor.
+--    Vì vậy mỗi Order luôn thuộc đúng 1 Vendor.
+-- 5. OrderItem lưu snapshot và FK product/variant nullable + ON DELETE SET NULL
+--    để không làm mất lịch sử đơn hàng.
+-- 6. Product/User/Vendor/Variant dùng is_active thay cho hard delete trong nghiệp vụ bình thường.
 
--- --------------------------------------------------------
+CREATE DATABASE IF NOT EXISTS ecommerce
+    CHARACTER SET utf8mb4
+    COLLATE utf8mb4_unicode_ci;
 
---
--- Table structure for table `cache`
---
+USE ecommerce;
 
-CREATE TABLE `cache` (
-  `key` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `value` mediumtext COLLATE utf8mb4_unicode_ci NOT NULL,
-  `expiration` int NOT NULL
+SET FOREIGN_KEY_CHECKS = 0;
+
+DROP TABLE IF EXISTS vendor_reviews;
+DROP TABLE IF EXISTS reviews;
+DROP TABLE IF EXISTS payments;
+DROP TABLE IF EXISTS order_items;
+DROP TABLE IF EXISTS orders;
+DROP TABLE IF EXISTS coupon_users;
+DROP TABLE IF EXISTS coupons;
+DROP TABLE IF EXISTS customer_addresses;
+DROP TABLE IF EXISTS wishlists;
+DROP TABLE IF EXISTS cart_items;
+DROP TABLE IF EXISTS carts;
+DROP TABLE IF EXISTS product_images;
+DROP TABLE IF EXISTS product_variants;
+DROP TABLE IF EXISTS products;
+DROP TABLE IF EXISTS categories;
+DROP TABLE IF EXISTS vendors;
+DROP TABLE IF EXISTS users;
+
+SET FOREIGN_KEY_CHECKS = 1;
+
+-- =========================================================
+-- USERS
+-- =========================================================
+CREATE TABLE users (
+                       id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+                       name VARCHAR(120) NOT NULL,
+                       email VARCHAR(191) NOT NULL,
+                       password VARCHAR(255) NOT NULL,
+                       role VARCHAR(20) NOT NULL DEFAULT 'CUSTOMER',
+                       is_active BOOLEAN NOT NULL DEFAULT TRUE,
+                       created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                       updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+                       PRIMARY KEY (id),
+                       CONSTRAINT uk_users_email UNIQUE (email),
+                       CONSTRAINT chk_users_role
+                           CHECK (role IN ('ADMIN', 'VENDOR', 'CUSTOMER'))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- --------------------------------------------------------
 
---
--- Table structure for table `cache_locks`
---
+-- =========================================================
+-- VENDORS
+-- 1 User chỉ có tối đa 1 Vendor profile
+-- =========================================================
+CREATE TABLE vendors (
+                         id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+                         user_id BIGINT UNSIGNED NOT NULL,
+                         shop_name VARCHAR(150) NOT NULL,
+                         description TEXT NULL,
+                         logo_url VARCHAR(500) NULL,
+                         address VARCHAR(500) NULL,
+                         is_active BOOLEAN NOT NULL DEFAULT TRUE,
+                         created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                         updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
-CREATE TABLE `cache_locks` (
-  `key` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `owner` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `expiration` int NOT NULL
+                         PRIMARY KEY (id),
+                         CONSTRAINT uk_vendors_user UNIQUE (user_id),
+                         CONSTRAINT fk_vendors_user
+                             FOREIGN KEY (user_id) REFERENCES users(id)
+                                 ON DELETE RESTRICT
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- --------------------------------------------------------
 
---
--- Table structure for table `carts`
---
+-- =========================================================
+-- CATEGORIES
+-- Không cascade delete cây category để tránh xoá nhầm subtree.
+-- Service phải kiểm tra trước khi xoá.
+-- =========================================================
+CREATE TABLE categories (
+                            id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+                            name VARCHAR(150) NOT NULL,
+                            slug VARCHAR(191) NOT NULL,
+                            parent_id BIGINT UNSIGNED NULL,
+                            image_url VARCHAR(500) NULL,
+                            is_active BOOLEAN NOT NULL DEFAULT TRUE,
+                            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                            updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
-CREATE TABLE `carts` (
-  `id` bigint UNSIGNED NOT NULL,
-  `user_id` bigint UNSIGNED NOT NULL,
-  `created_at` timestamp NULL DEFAULT NULL,
-  `updated_at` timestamp NULL DEFAULT NULL
+                            PRIMARY KEY (id),
+                            CONSTRAINT uk_categories_slug UNIQUE (slug),
+                            CONSTRAINT fk_categories_parent
+                                FOREIGN KEY (parent_id) REFERENCES categories(id)
+                                    ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- --------------------------------------------------------
 
---
--- Table structure for table `cart_items`
---
+-- =========================================================
+-- PRODUCTS
+-- Product không giữ price/stock để tránh 2 nguồn sự thật.
+-- Price/stock luôn nằm ở product_variants.
+-- =========================================================
+CREATE TABLE products (
+                          id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+                          vendor_id BIGINT UNSIGNED NOT NULL,
+                          category_id BIGINT UNSIGNED NULL,
+                          name VARCHAR(255) NOT NULL,
+                          slug VARCHAR(191) NOT NULL,
+                          description TEXT NOT NULL,
+                          is_active BOOLEAN NOT NULL DEFAULT TRUE,
+                          created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                          updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
-CREATE TABLE `cart_items` (
-  `id` bigint UNSIGNED NOT NULL,
-  `cart_id` bigint UNSIGNED NOT NULL,
-  `product_id` bigint UNSIGNED NOT NULL,
-  `product_variant_id` bigint UNSIGNED DEFAULT NULL,
-  `quantity` int NOT NULL,
-  `created_at` timestamp NULL DEFAULT NULL,
-  `updated_at` timestamp NULL DEFAULT NULL
+                          PRIMARY KEY (id),
+                          CONSTRAINT uk_products_slug UNIQUE (slug),
+                          CONSTRAINT fk_products_vendor
+                              FOREIGN KEY (vendor_id) REFERENCES vendors(id)
+                                  ON DELETE RESTRICT,
+                          CONSTRAINT fk_products_category
+                              FOREIGN KEY (category_id) REFERENCES categories(id)
+                                  ON DELETE SET NULL,
+
+                          INDEX idx_products_vendor_active (vendor_id, is_active),
+                          INDEX idx_products_category_active (category_id, is_active),
+                          INDEX idx_products_created_at (created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- --------------------------------------------------------
 
---
--- Table structure for table `categories`
---
+-- =========================================================
+-- PRODUCT VARIANTS
+-- Mỗi product phải có >= 1 variant ở tầng Service.
+-- Sản phẩm đơn giản dùng variant name = 'Default'.
+-- =========================================================
+CREATE TABLE product_variants (
+                                  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+                                  product_id BIGINT UNSIGNED NOT NULL,
+                                  name VARCHAR(150) NOT NULL,
+                                  sku VARCHAR(191) NULL,
+                                  price DECIMAL(12,2) NOT NULL,
+                                  stock INT UNSIGNED NOT NULL DEFAULT 0,
+                                  is_active BOOLEAN NOT NULL DEFAULT TRUE,
+                                  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                                  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
-CREATE TABLE `categories` (
-  `id` bigint UNSIGNED NOT NULL,
-  `name` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `parent_id` bigint UNSIGNED DEFAULT NULL,
-  `image` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `slug` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `created_at` timestamp NULL DEFAULT NULL,
-  `updated_at` timestamp NULL DEFAULT NULL
+                                  PRIMARY KEY (id),
+                                  CONSTRAINT uk_product_variants_sku UNIQUE (sku),
+                                  CONSTRAINT fk_product_variants_product
+                                      FOREIGN KEY (product_id) REFERENCES products(id)
+                                          ON DELETE CASCADE,
+                                  CONSTRAINT chk_product_variants_price CHECK (price >= 0),
+
+                                  INDEX idx_variants_product_active (product_id, is_active),
+                                  INDEX idx_variants_price (price)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- --------------------------------------------------------
 
---
--- Table structure for table `coupons`
---
+-- =========================================================
+-- PRODUCT IMAGES
+-- =========================================================
+CREATE TABLE product_images (
+                                id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+                                product_id BIGINT UNSIGNED NOT NULL,
+                                image_url VARCHAR(500) NOT NULL,
+                                is_main BOOLEAN NOT NULL DEFAULT FALSE,
+                                sort_order INT UNSIGNED NOT NULL DEFAULT 0,
+                                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                                updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
-CREATE TABLE `coupons` (
-  `id` bigint UNSIGNED NOT NULL,
-  `code` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `type` enum('fixed','percent') COLLATE utf8mb4_unicode_ci NOT NULL,
-  `value` decimal(8,2) NOT NULL,
-  `min_order_amount` decimal(8,2) DEFAULT NULL,
-  `usage_limit` int UNSIGNED DEFAULT NULL,
-  `used` int UNSIGNED NOT NULL DEFAULT '0',
-  `valid_from` datetime DEFAULT NULL,
-  `valid_until` datetime DEFAULT NULL,
-  `created_at` timestamp NULL DEFAULT NULL,
-  `updated_at` timestamp NULL DEFAULT NULL
+                                PRIMARY KEY (id),
+                                CONSTRAINT fk_product_images_product
+                                    FOREIGN KEY (product_id) REFERENCES products(id)
+                                        ON DELETE CASCADE,
+
+                                INDEX idx_product_images_product (product_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- --------------------------------------------------------
 
---
--- Table structure for table `coupon_users`
---
+-- =========================================================
+-- CARTS
+-- 1 User = 1 Cart
+-- =========================================================
+CREATE TABLE carts (
+                       id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+                       user_id BIGINT UNSIGNED NOT NULL,
+                       created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                       updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
-CREATE TABLE `coupon_users` (
-  `id` bigint UNSIGNED NOT NULL,
-  `coupon_id` bigint UNSIGNED NOT NULL,
-  `user_id` bigint UNSIGNED NOT NULL,
-  `times_used` int UNSIGNED NOT NULL DEFAULT '0',
-  `created_at` timestamp NULL DEFAULT NULL,
-  `updated_at` timestamp NULL DEFAULT NULL
+                       PRIMARY KEY (id),
+                       CONSTRAINT uk_carts_user UNIQUE (user_id),
+                       CONSTRAINT fk_carts_user
+                           FOREIGN KEY (user_id) REFERENCES users(id)
+                               ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- --------------------------------------------------------
 
---
--- Table structure for table `customer_addresses`
---
+-- =========================================================
+-- CART ITEMS
+-- Chỉ cần variant_id vì từ variant có thể suy ra product.
+-- UNIQUE(cart_id, product_variant_id) giúp không sinh dòng trùng.
+-- =========================================================
+CREATE TABLE cart_items (
+                            id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+                            cart_id BIGINT UNSIGNED NOT NULL,
+                            product_variant_id BIGINT UNSIGNED NOT NULL,
+                            quantity INT UNSIGNED NOT NULL,
+                            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                            updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
-CREATE TABLE `customer_addresses` (
-  `id` bigint UNSIGNED NOT NULL,
-  `user_id` bigint UNSIGNED NOT NULL,
-  `type` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'billing',
-  `name` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `address_line1` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `address_line2` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `city` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `state` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `postal_code` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `country` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `phone_number` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `is_default` tinyint(1) NOT NULL,
-  `created_at` timestamp NULL DEFAULT NULL,
-  `updated_at` timestamp NULL DEFAULT NULL
+                            PRIMARY KEY (id),
+                            CONSTRAINT uk_cart_items_cart_variant
+                                UNIQUE (cart_id, product_variant_id),
+                            CONSTRAINT fk_cart_items_cart
+                                FOREIGN KEY (cart_id) REFERENCES carts(id)
+                                    ON DELETE CASCADE,
+                            CONSTRAINT fk_cart_items_variant
+                                FOREIGN KEY (product_variant_id) REFERENCES product_variants(id)
+                                    ON DELETE CASCADE,
+                            CONSTRAINT chk_cart_items_quantity CHECK (quantity > 0),
+
+                            INDEX idx_cart_items_variant (product_variant_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- --------------------------------------------------------
 
---
--- Table structure for table `failed_jobs`
---
+-- =========================================================
+-- WISHLISTS
+-- =========================================================
+CREATE TABLE wishlists (
+                           id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+                           user_id BIGINT UNSIGNED NOT NULL,
+                           product_id BIGINT UNSIGNED NOT NULL,
+                           created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                           updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
-CREATE TABLE `failed_jobs` (
-  `id` bigint UNSIGNED NOT NULL,
-  `uuid` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `connection` text COLLATE utf8mb4_unicode_ci NOT NULL,
-  `queue` text COLLATE utf8mb4_unicode_ci NOT NULL,
-  `payload` longtext COLLATE utf8mb4_unicode_ci NOT NULL,
-  `exception` longtext COLLATE utf8mb4_unicode_ci NOT NULL,
-  `failed_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP
+                           PRIMARY KEY (id),
+                           CONSTRAINT uk_wishlists_user_product UNIQUE (user_id, product_id),
+                           CONSTRAINT fk_wishlists_user
+                               FOREIGN KEY (user_id) REFERENCES users(id)
+                                   ON DELETE CASCADE,
+                           CONSTRAINT fk_wishlists_product
+                               FOREIGN KEY (product_id) REFERENCES products(id)
+                                   ON DELETE CASCADE,
+
+                           INDEX idx_wishlists_product (product_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- --------------------------------------------------------
 
---
--- Table structure for table `jobs`
---
+-- =========================================================
+-- CUSTOMER ADDRESSES
+-- Chỉ 1 default/user được enforce trong AddressService + transaction.
+-- =========================================================
+CREATE TABLE customer_addresses (
+                                    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+                                    user_id BIGINT UNSIGNED NOT NULL,
+                                    type VARCHAR(20) NOT NULL DEFAULT 'SHIPPING',
+                                    name VARCHAR(120) NOT NULL,
+                                    address_line1 VARCHAR(255) NOT NULL,
+                                    address_line2 VARCHAR(255) NULL,
+                                    city VARCHAR(120) NOT NULL,
+                                    state VARCHAR(120) NULL,
+                                    postal_code VARCHAR(30) NULL,
+                                    country VARCHAR(120) NOT NULL,
+                                    phone_number VARCHAR(30) NOT NULL,
+                                    is_default BOOLEAN NOT NULL DEFAULT FALSE,
+                                    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                                    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
-CREATE TABLE `jobs` (
-  `id` bigint UNSIGNED NOT NULL,
-  `queue` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `payload` longtext COLLATE utf8mb4_unicode_ci NOT NULL,
-  `attempts` tinyint UNSIGNED NOT NULL,
-  `reserved_at` int UNSIGNED DEFAULT NULL,
-  `available_at` int UNSIGNED NOT NULL,
-  `created_at` int UNSIGNED NOT NULL
+                                    PRIMARY KEY (id),
+                                    CONSTRAINT fk_customer_addresses_user
+                                        FOREIGN KEY (user_id) REFERENCES users(id)
+                                            ON DELETE CASCADE,
+                                    CONSTRAINT chk_customer_addresses_type
+                                        CHECK (type IN ('SHIPPING', 'BILLING')),
+
+                                    INDEX idx_addresses_user_default (user_id, is_default)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- --------------------------------------------------------
 
---
--- Table structure for table `job_batches`
---
+-- =========================================================
+-- COUPONS
+-- per_user_limit được thêm để times_used có ý nghĩa rõ ràng.
+-- =========================================================
+CREATE TABLE coupons (
+                         id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+                         code VARCHAR(80) NOT NULL,
+                         type VARCHAR(20) NOT NULL,
+                         value DECIMAL(12,2) NOT NULL,
+                         min_order_amount DECIMAL(12,2) NULL,
+                         usage_limit INT UNSIGNED NULL,
+                         used_count INT UNSIGNED NOT NULL DEFAULT 0,
+                         per_user_limit INT UNSIGNED NOT NULL DEFAULT 1,
+                         valid_from DATETIME NULL,
+                         valid_until DATETIME NULL,
+                         is_active BOOLEAN NOT NULL DEFAULT TRUE,
+                         created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                         updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
-CREATE TABLE `job_batches` (
-  `id` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `name` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `total_jobs` int NOT NULL,
-  `pending_jobs` int NOT NULL,
-  `failed_jobs` int NOT NULL,
-  `failed_job_ids` longtext COLLATE utf8mb4_unicode_ci NOT NULL,
-  `options` mediumtext COLLATE utf8mb4_unicode_ci,
-  `cancelled_at` int DEFAULT NULL,
-  `created_at` int NOT NULL,
-  `finished_at` int DEFAULT NULL
+                         PRIMARY KEY (id),
+                         CONSTRAINT uk_coupons_code UNIQUE (code),
+                         CONSTRAINT chk_coupons_type
+                             CHECK (type IN ('FIXED', 'PERCENT')),
+                         CONSTRAINT chk_coupons_value
+                             CHECK (value > 0),
+                         CONSTRAINT chk_coupons_percent
+                             CHECK (type <> 'PERCENT' OR value <= 100),
+                         CONSTRAINT chk_coupons_min_order
+                             CHECK (min_order_amount IS NULL OR min_order_amount >= 0),
+                         CONSTRAINT chk_coupons_date_range
+                             CHECK (valid_until IS NULL OR valid_from IS NULL OR valid_until >= valid_from),
+
+                         INDEX idx_coupons_active_dates (is_active, valid_from, valid_until)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- --------------------------------------------------------
 
---
--- Table structure for table `migrations`
---
+-- =========================================================
+-- COUPON USERS
+-- =========================================================
+CREATE TABLE coupon_users (
+                              id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+                              coupon_id BIGINT UNSIGNED NOT NULL,
+                              user_id BIGINT UNSIGNED NOT NULL,
+                              times_used INT UNSIGNED NOT NULL DEFAULT 0,
+                              created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                              updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
-CREATE TABLE `migrations` (
-  `id` int UNSIGNED NOT NULL,
-  `migration` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `batch` int NOT NULL
+                              PRIMARY KEY (id),
+                              CONSTRAINT uk_coupon_users_coupon_user UNIQUE (coupon_id, user_id),
+                              CONSTRAINT fk_coupon_users_coupon
+                                  FOREIGN KEY (coupon_id) REFERENCES coupons(id)
+                                      ON DELETE CASCADE,
+                              CONSTRAINT fk_coupon_users_user
+                                  FOREIGN KEY (user_id) REFERENCES users(id)
+                                      ON DELETE CASCADE,
+
+                              INDEX idx_coupon_users_user (user_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- --------------------------------------------------------
 
---
--- Table structure for table `orders`
---
+-- =========================================================
+-- ORDERS
+-- Mỗi Order thuộc đúng 1 Vendor.
+-- Cart có thể chứa nhiều vendor nhưng CheckoutRequest chọn 1 vendor.
+-- =========================================================
+CREATE TABLE orders (
+                        id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+                        user_id BIGINT UNSIGNED NOT NULL,
+                        vendor_id BIGINT UNSIGNED NOT NULL,
 
-CREATE TABLE `orders` (
-  `id` bigint UNSIGNED NOT NULL,
-  `user_id` bigint UNSIGNED NOT NULL,
-  `address_name` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `address_line1` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `address_line2` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `city` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `state` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `postal_code` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `country` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `phone_number` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `status` enum('pending','processing','shipped','delivered','cancelled') COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'pending',
-  `total` decimal(10,2) NOT NULL,
-  `coupon_code` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `discount_amount` decimal(8,2) NOT NULL DEFAULT '0.00',
-  `created_at` timestamp NULL DEFAULT NULL,
-  `updated_at` timestamp NULL DEFAULT NULL
+                        address_name VARCHAR(120) NOT NULL,
+                        address_line1 VARCHAR(255) NOT NULL,
+                        address_line2 VARCHAR(255) NULL,
+                        city VARCHAR(120) NOT NULL,
+                        state VARCHAR(120) NULL,
+                        postal_code VARCHAR(30) NULL,
+                        country VARCHAR(120) NOT NULL,
+                        phone_number VARCHAR(30) NOT NULL,
+
+                        status VARCHAR(30) NOT NULL DEFAULT 'PENDING',
+                        subtotal DECIMAL(12,2) NOT NULL,
+                        discount_amount DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+                        total DECIMAL(12,2) NOT NULL,
+                        coupon_code VARCHAR(80) NULL,
+
+                        cancelled_at DATETIME NULL,
+                        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+                        PRIMARY KEY (id),
+
+                        CONSTRAINT fk_orders_user
+                            FOREIGN KEY (user_id) REFERENCES users(id)
+                                ON DELETE RESTRICT,
+                        CONSTRAINT fk_orders_vendor
+                            FOREIGN KEY (vendor_id) REFERENCES vendors(id)
+                                ON DELETE RESTRICT,
+
+                        CONSTRAINT chk_orders_status
+                            CHECK (status IN ('PENDING', 'PROCESSING', 'SHIPPED', 'DELIVERED', 'CANCELLED')),
+                        CONSTRAINT chk_orders_subtotal CHECK (subtotal >= 0),
+                        CONSTRAINT chk_orders_discount CHECK (discount_amount >= 0),
+                        CONSTRAINT chk_orders_total CHECK (total >= 0),
+
+                        INDEX idx_orders_user_created (user_id, created_at),
+                        INDEX idx_orders_vendor_status (vendor_id, status),
+                        INDEX idx_orders_status_created (status, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- --------------------------------------------------------
 
---
--- Table structure for table `order_items`
---
+-- =========================================================
+-- ORDER ITEMS
+-- Snapshot là dữ liệu lịch sử thật của đơn hàng.
+-- product_id / product_variant_id được phép NULL nếu tài nguyên gốc bị xoá.
+-- =========================================================
+CREATE TABLE order_items (
+                             id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+                             order_id BIGINT UNSIGNED NOT NULL,
+                             product_id BIGINT UNSIGNED NULL,
+                             product_variant_id BIGINT UNSIGNED NULL,
 
-CREATE TABLE `order_items` (
-  `id` bigint UNSIGNED NOT NULL,
-  `order_id` bigint UNSIGNED NOT NULL,
-  `product_id` bigint UNSIGNED NOT NULL,
-  `product_variant_id` bigint UNSIGNED NOT NULL,
-  `product_name` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `quantity` int NOT NULL,
-  `variant_name` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `price` decimal(10,2) NOT NULL,
-  `created_at` timestamp NULL DEFAULT NULL,
-  `updated_at` timestamp NULL DEFAULT NULL
+                             product_name VARCHAR(255) NOT NULL,
+                             variant_name VARCHAR(150) NOT NULL,
+                             sku VARCHAR(191) NULL,
+                             price DECIMAL(12,2) NOT NULL,
+                             quantity INT UNSIGNED NOT NULL,
+                             line_total DECIMAL(12,2) NOT NULL,
+
+                             created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                             updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+                             PRIMARY KEY (id),
+
+                             CONSTRAINT fk_order_items_order
+                                 FOREIGN KEY (order_id) REFERENCES orders(id)
+                                     ON DELETE CASCADE,
+                             CONSTRAINT fk_order_items_product
+                                 FOREIGN KEY (product_id) REFERENCES products(id)
+                                     ON DELETE SET NULL,
+                             CONSTRAINT fk_order_items_variant
+                                 FOREIGN KEY (product_variant_id) REFERENCES product_variants(id)
+                                     ON DELETE SET NULL,
+
+                             CONSTRAINT chk_order_items_price CHECK (price >= 0),
+                             CONSTRAINT chk_order_items_quantity CHECK (quantity > 0),
+                             CONSTRAINT chk_order_items_line_total CHECK (line_total >= 0),
+
+                             INDEX idx_order_items_order (order_id),
+                             INDEX idx_order_items_product (product_id),
+                             INDEX idx_order_items_variant (product_variant_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- --------------------------------------------------------
 
---
--- Table structure for table `password_reset_tokens`
---
+-- =========================================================
+-- PAYMENTS
+-- 1 Order có nhiều payment attempts.
+-- =========================================================
+CREATE TABLE payments (
+                          id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+                          order_id BIGINT UNSIGNED NOT NULL,
+                          payment_method VARCHAR(50) NOT NULL,
+                          payment_reference VARCHAR(191) NOT NULL,
+                          amount DECIMAL(12,2) NOT NULL,
+                          status VARCHAR(20) NOT NULL DEFAULT 'PENDING',
+                          paid_at DATETIME NULL,
+                          created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                          updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
-CREATE TABLE `password_reset_tokens` (
-  `email` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `token` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `created_at` timestamp NULL DEFAULT NULL
+                          PRIMARY KEY (id),
+
+                          CONSTRAINT uk_payments_reference UNIQUE (payment_reference),
+                          CONSTRAINT fk_payments_order
+                              FOREIGN KEY (order_id) REFERENCES orders(id)
+                                  ON DELETE CASCADE,
+                          CONSTRAINT chk_payments_status
+                              CHECK (status IN ('PENDING', 'PAID', 'FAILED', 'REFUNDED')),
+                          CONSTRAINT chk_payments_amount CHECK (amount >= 0),
+
+                          INDEX idx_payments_order_created (order_id, created_at),
+                          INDEX idx_payments_status (status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- --------------------------------------------------------
 
---
--- Table structure for table `payments`
---
+-- =========================================================
+-- PRODUCT REVIEWS
+-- order_item_id giúp chứng minh review dựa trên một lần mua thật.
+-- Service vẫn phải verify:
+-- order_item.order.user_id == review.user_id
+-- và order.status == DELIVERED.
+-- =========================================================
+CREATE TABLE reviews (
+                         id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+                         user_id BIGINT UNSIGNED NOT NULL,
+                         product_id BIGINT UNSIGNED NOT NULL,
+                         order_item_id BIGINT UNSIGNED NOT NULL,
+                         rating TINYINT UNSIGNED NOT NULL,
+                         comment TEXT NULL,
+                         created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                         updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
-CREATE TABLE `payments` (
-  `id` bigint UNSIGNED NOT NULL,
-  `order_id` bigint UNSIGNED NOT NULL,
-  `payment_method` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `payment_reference` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `amount` decimal(10,2) NOT NULL,
-  `status` enum('pending','paid','failed') COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'pending',
-  `paid_at` datetime DEFAULT NULL,
-  `created_at` timestamp NULL DEFAULT NULL,
-  `updated_at` timestamp NULL DEFAULT NULL
+                         PRIMARY KEY (id),
+
+                         CONSTRAINT uk_reviews_user_product UNIQUE (user_id, product_id),
+                         CONSTRAINT fk_reviews_user
+                             FOREIGN KEY (user_id) REFERENCES users(id)
+                                 ON DELETE CASCADE,
+                         CONSTRAINT fk_reviews_product
+                             FOREIGN KEY (product_id) REFERENCES products(id)
+                                 ON DELETE CASCADE,
+                         CONSTRAINT fk_reviews_order_item
+                             FOREIGN KEY (order_item_id) REFERENCES order_items(id)
+                                 ON DELETE RESTRICT,
+                         CONSTRAINT chk_reviews_rating CHECK (rating BETWEEN 1 AND 5),
+
+                         INDEX idx_reviews_product_created (product_id, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- --------------------------------------------------------
 
---
--- Table structure for table `products`
---
+-- =========================================================
+-- VENDOR REVIEWS
+-- order_id giúp chứng minh user đã có đơn DELIVERED của vendor.
+-- =========================================================
+CREATE TABLE vendor_reviews (
+                                id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+                                vendor_id BIGINT UNSIGNED NOT NULL,
+                                user_id BIGINT UNSIGNED NOT NULL,
+                                order_id BIGINT UNSIGNED NOT NULL,
+                                rating TINYINT UNSIGNED NOT NULL,
+                                comment TEXT NULL,
+                                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                                updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
-CREATE TABLE `products` (
-  `id` bigint UNSIGNED NOT NULL,
-  `vendor_id` bigint UNSIGNED NOT NULL,
-  `category_id` bigint UNSIGNED DEFAULT NULL,
-  `name` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `description` text COLLATE utf8mb4_unicode_ci NOT NULL,
-  `price` decimal(10,2) NOT NULL,
-  `stock` int NOT NULL DEFAULT '0',
-  `is_active` tinyint(1) NOT NULL DEFAULT '1',
-  `created_at` timestamp NULL DEFAULT NULL,
-  `updated_at` timestamp NULL DEFAULT NULL
+                                PRIMARY KEY (id),
+
+                                CONSTRAINT uk_vendor_reviews_user_vendor UNIQUE (user_id, vendor_id),
+                                CONSTRAINT fk_vendor_reviews_vendor
+                                    FOREIGN KEY (vendor_id) REFERENCES vendors(id)
+                                        ON DELETE CASCADE,
+                                CONSTRAINT fk_vendor_reviews_user
+                                    FOREIGN KEY (user_id) REFERENCES users(id)
+                                        ON DELETE CASCADE,
+                                CONSTRAINT fk_vendor_reviews_order
+                                    FOREIGN KEY (order_id) REFERENCES orders(id)
+                                        ON DELETE RESTRICT,
+                                CONSTRAINT chk_vendor_reviews_rating CHECK (rating BETWEEN 1 AND 5),
+
+                                INDEX idx_vendor_reviews_vendor_created (vendor_id, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
--- --------------------------------------------------------
-
---
--- Table structure for table `product_images`
---
-
-CREATE TABLE `product_images` (
-  `id` bigint UNSIGNED NOT NULL,
-  `product_id` bigint UNSIGNED NOT NULL,
-  `image` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `is_main` tinyint(1) NOT NULL DEFAULT '0',
-  `created_at` timestamp NULL DEFAULT NULL,
-  `updated_at` timestamp NULL DEFAULT NULL
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
--- --------------------------------------------------------
-
---
--- Table structure for table `product_variants`
---
-
-CREATE TABLE `product_variants` (
-  `id` bigint UNSIGNED NOT NULL,
-  `product_id` bigint UNSIGNED NOT NULL,
-  `name` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `price` decimal(12,2) NOT NULL,
-  `stock` int NOT NULL DEFAULT '0',
-  `sku` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `created_at` timestamp NULL DEFAULT NULL,
-  `updated_at` timestamp NULL DEFAULT NULL
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
--- --------------------------------------------------------
-
---
--- Table structure for table `reviews`
---
-
-CREATE TABLE `reviews` (
-  `id` bigint UNSIGNED NOT NULL,
-  `user_id` bigint UNSIGNED NOT NULL,
-  `product_id` bigint UNSIGNED NOT NULL,
-  `rating` tinyint NOT NULL COMMENT '1-5',
-  `comment` text COLLATE utf8mb4_unicode_ci,
-  `created_at` timestamp NULL DEFAULT NULL,
-  `updated_at` timestamp NULL DEFAULT NULL
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
--- --------------------------------------------------------
-
---
--- Table structure for table `sessions`
---
-
-CREATE TABLE `sessions` (
-  `id` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `user_id` bigint UNSIGNED DEFAULT NULL,
-  `ip_address` varchar(45) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `user_agent` text COLLATE utf8mb4_unicode_ci,
-  `payload` longtext COLLATE utf8mb4_unicode_ci NOT NULL,
-  `last_activity` int NOT NULL
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
--- --------------------------------------------------------
-
---
--- Table structure for table `users`
---
-
-CREATE TABLE `users` (
-  `id` bigint UNSIGNED NOT NULL,
-  `name` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `email` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `email_verified_at` timestamp NULL DEFAULT NULL,
-  `password` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `role` enum('admin','vendor','customer') COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'customer',
-  `remember_token` varchar(100) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `created_at` timestamp NULL DEFAULT NULL,
-  `updated_at` timestamp NULL DEFAULT NULL
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
--- --------------------------------------------------------
-
---
--- Table structure for table `vendors`
---
-
-CREATE TABLE `vendors` (
-  `id` bigint UNSIGNED NOT NULL,
-  `user_id` bigint UNSIGNED NOT NULL,
-  `shop_name` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `description` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `logo` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `address` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `created_at` timestamp NULL DEFAULT NULL,
-  `updated_at` timestamp NULL DEFAULT NULL
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
--- --------------------------------------------------------
-
---
--- Table structure for table `vendor_reviews`
---
-
-CREATE TABLE `vendor_reviews` (
-  `id` bigint UNSIGNED NOT NULL,
-  `vendor_id` bigint UNSIGNED NOT NULL,
-  `user_id` bigint UNSIGNED NOT NULL,
-  `rating` tinyint UNSIGNED NOT NULL,
-  `comment` text COLLATE utf8mb4_unicode_ci,
-  `created_at` timestamp NULL DEFAULT NULL,
-  `updated_at` timestamp NULL DEFAULT NULL
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
--- --------------------------------------------------------
-
---
--- Table structure for table `wishlists`
---
-
-CREATE TABLE `wishlists` (
-  `id` bigint UNSIGNED NOT NULL,
-  `user_id` bigint UNSIGNED NOT NULL,
-  `product_id` bigint UNSIGNED NOT NULL,
-  `created_at` timestamp NULL DEFAULT NULL,
-  `updated_at` timestamp NULL DEFAULT NULL
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
---
--- Indexes for dumped tables
---
-
---
--- Indexes for table `cache`
---
-ALTER TABLE `cache`
-  ADD PRIMARY KEY (`key`);
-
---
--- Indexes for table `cache_locks`
---
-ALTER TABLE `cache_locks`
-  ADD PRIMARY KEY (`key`);
-
---
--- Indexes for table `carts`
---
-ALTER TABLE `carts`
-  ADD PRIMARY KEY (`id`),
-  ADD KEY `carts_user_id_foreign` (`user_id`);
-
---
--- Indexes for table `cart_items`
---
-ALTER TABLE `cart_items`
-  ADD PRIMARY KEY (`id`),
-  ADD KEY `cart_items_cart_id_foreign` (`cart_id`),
-  ADD KEY `cart_items_product_id_foreign` (`product_id`),
-  ADD KEY `cart_items_product_variant_id_foreign` (`product_variant_id`);
-
---
--- Indexes for table `categories`
---
-ALTER TABLE `categories`
-  ADD PRIMARY KEY (`id`),
-  ADD KEY `categories_parent_id_foreign` (`parent_id`);
-
---
--- Indexes for table `coupons`
---
-ALTER TABLE `coupons`
-  ADD PRIMARY KEY (`id`),
-  ADD UNIQUE KEY `coupons_code_unique` (`code`);
-
---
--- Indexes for table `coupon_users`
---
-ALTER TABLE `coupon_users`
-  ADD PRIMARY KEY (`id`),
-  ADD KEY `coupon_users_coupon_id_foreign` (`coupon_id`),
-  ADD KEY `coupon_users_user_id_foreign` (`user_id`);
-
---
--- Indexes for table `customer_addresses`
---
-ALTER TABLE `customer_addresses`
-  ADD PRIMARY KEY (`id`),
-  ADD KEY `customer_addresses_user_id_foreign` (`user_id`);
-
---
--- Indexes for table `failed_jobs`
---
-ALTER TABLE `failed_jobs`
-  ADD PRIMARY KEY (`id`),
-  ADD UNIQUE KEY `failed_jobs_uuid_unique` (`uuid`);
-
---
--- Indexes for table `jobs`
---
-ALTER TABLE `jobs`
-  ADD PRIMARY KEY (`id`),
-  ADD KEY `jobs_queue_index` (`queue`);
-
---
--- Indexes for table `job_batches`
---
-ALTER TABLE `job_batches`
-  ADD PRIMARY KEY (`id`);
-
---
--- Indexes for table `migrations`
---
-ALTER TABLE `migrations`
-  ADD PRIMARY KEY (`id`);
-
---
--- Indexes for table `orders`
---
-ALTER TABLE `orders`
-  ADD PRIMARY KEY (`id`),
-  ADD KEY `orders_user_id_foreign` (`user_id`);
-
---
--- Indexes for table `order_items`
---
-ALTER TABLE `order_items`
-  ADD PRIMARY KEY (`id`),
-  ADD KEY `order_items_order_id_foreign` (`order_id`),
-  ADD KEY `order_items_product_id_foreign` (`product_id`),
-  ADD KEY `order_items_product_variant_id_foreign` (`product_variant_id`);
-
---
--- Indexes for table `password_reset_tokens`
---
-ALTER TABLE `password_reset_tokens`
-  ADD PRIMARY KEY (`email`);
-
---
--- Indexes for table `payments`
---
-ALTER TABLE `payments`
-  ADD PRIMARY KEY (`id`),
-  ADD UNIQUE KEY `payments_payment_reference_unique` (`payment_reference`),
-  ADD KEY `payments_order_id_foreign` (`order_id`);
-
---
--- Indexes for table `products`
---
-ALTER TABLE `products`
-  ADD PRIMARY KEY (`id`),
-  ADD KEY `products_vendor_id_foreign` (`vendor_id`),
-  ADD KEY `products_category_id_foreign` (`category_id`);
-
---
--- Indexes for table `product_images`
---
-ALTER TABLE `product_images`
-  ADD PRIMARY KEY (`id`),
-  ADD KEY `product_images_product_id_foreign` (`product_id`);
-
---
--- Indexes for table `product_variants`
---
-ALTER TABLE `product_variants`
-  ADD PRIMARY KEY (`id`),
-  ADD KEY `product_variants_product_id_foreign` (`product_id`);
-
---
--- Indexes for table `reviews`
---
-ALTER TABLE `reviews`
-  ADD PRIMARY KEY (`id`),
-  ADD KEY `reviews_user_id_foreign` (`user_id`),
-  ADD KEY `reviews_product_id_foreign` (`product_id`);
-
---
--- Indexes for table `sessions`
---
-ALTER TABLE `sessions`
-  ADD PRIMARY KEY (`id`),
-  ADD KEY `sessions_user_id_index` (`user_id`),
-  ADD KEY `sessions_last_activity_index` (`last_activity`);
-
---
--- Indexes for table `users`
---
-ALTER TABLE `users`
-  ADD PRIMARY KEY (`id`),
-  ADD UNIQUE KEY `users_email_unique` (`email`);
-
---
--- Indexes for table `vendors`
---
-ALTER TABLE `vendors`
-  ADD PRIMARY KEY (`id`),
-  ADD KEY `vendors_user_id_foreign` (`user_id`);
-
---
--- Indexes for table `vendor_reviews`
---
-ALTER TABLE `vendor_reviews`
-  ADD PRIMARY KEY (`id`),
-  ADD KEY `vendor_reviews_vendor_id_foreign` (`vendor_id`),
-  ADD KEY `vendor_reviews_user_id_foreign` (`user_id`);
-
---
--- Indexes for table `wishlists`
---
-ALTER TABLE `wishlists`
-  ADD PRIMARY KEY (`id`),
-  ADD KEY `wishlists_user_id_foreign` (`user_id`),
-  ADD KEY `wishlists_product_id_foreign` (`product_id`);
-
---
--- AUTO_INCREMENT for dumped tables
---
-
---
--- AUTO_INCREMENT for table `carts`
---
-ALTER TABLE `carts`
-  MODIFY `id` bigint UNSIGNED NOT NULL AUTO_INCREMENT;
-
---
--- AUTO_INCREMENT for table `cart_items`
---
-ALTER TABLE `cart_items`
-  MODIFY `id` bigint UNSIGNED NOT NULL AUTO_INCREMENT;
-
---
--- AUTO_INCREMENT for table `categories`
---
-ALTER TABLE `categories`
-  MODIFY `id` bigint UNSIGNED NOT NULL AUTO_INCREMENT;
-
---
--- AUTO_INCREMENT for table `coupons`
---
-ALTER TABLE `coupons`
-  MODIFY `id` bigint UNSIGNED NOT NULL AUTO_INCREMENT;
-
---
--- AUTO_INCREMENT for table `coupon_users`
---
-ALTER TABLE `coupon_users`
-  MODIFY `id` bigint UNSIGNED NOT NULL AUTO_INCREMENT;
-
---
--- AUTO_INCREMENT for table `customer_addresses`
---
-ALTER TABLE `customer_addresses`
-  MODIFY `id` bigint UNSIGNED NOT NULL AUTO_INCREMENT;
-
---
--- AUTO_INCREMENT for table `failed_jobs`
---
-ALTER TABLE `failed_jobs`
-  MODIFY `id` bigint UNSIGNED NOT NULL AUTO_INCREMENT;
-
---
--- AUTO_INCREMENT for table `jobs`
---
-ALTER TABLE `jobs`
-  MODIFY `id` bigint UNSIGNED NOT NULL AUTO_INCREMENT;
-
---
--- AUTO_INCREMENT for table `migrations`
---
-ALTER TABLE `migrations`
-  MODIFY `id` int UNSIGNED NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=20;
-
---
--- AUTO_INCREMENT for table `orders`
---
-ALTER TABLE `orders`
-  MODIFY `id` bigint UNSIGNED NOT NULL AUTO_INCREMENT;
-
---
--- AUTO_INCREMENT for table `order_items`
---
-ALTER TABLE `order_items`
-  MODIFY `id` bigint UNSIGNED NOT NULL AUTO_INCREMENT;
-
---
--- AUTO_INCREMENT for table `payments`
---
-ALTER TABLE `payments`
-  MODIFY `id` bigint UNSIGNED NOT NULL AUTO_INCREMENT;
-
---
--- AUTO_INCREMENT for table `products`
---
-ALTER TABLE `products`
-  MODIFY `id` bigint UNSIGNED NOT NULL AUTO_INCREMENT;
-
---
--- AUTO_INCREMENT for table `product_images`
---
-ALTER TABLE `product_images`
-  MODIFY `id` bigint UNSIGNED NOT NULL AUTO_INCREMENT;
-
---
--- AUTO_INCREMENT for table `product_variants`
---
-ALTER TABLE `product_variants`
-  MODIFY `id` bigint UNSIGNED NOT NULL AUTO_INCREMENT;
-
---
--- AUTO_INCREMENT for table `reviews`
---
-ALTER TABLE `reviews`
-  MODIFY `id` bigint UNSIGNED NOT NULL AUTO_INCREMENT;
-
---
--- AUTO_INCREMENT for table `users`
---
-ALTER TABLE `users`
-  MODIFY `id` bigint UNSIGNED NOT NULL AUTO_INCREMENT;
-
---
--- AUTO_INCREMENT for table `vendors`
---
-ALTER TABLE `vendors`
-  MODIFY `id` bigint UNSIGNED NOT NULL AUTO_INCREMENT;
-
---
--- AUTO_INCREMENT for table `vendor_reviews`
---
-ALTER TABLE `vendor_reviews`
-  MODIFY `id` bigint UNSIGNED NOT NULL AUTO_INCREMENT;
-
---
--- AUTO_INCREMENT for table `wishlists`
---
-ALTER TABLE `wishlists`
-  MODIFY `id` bigint UNSIGNED NOT NULL AUTO_INCREMENT;
-
---
--- Constraints for dumped tables
---
-
---
--- Constraints for table `carts`
---
-ALTER TABLE `carts`
-  ADD CONSTRAINT `carts_user_id_foreign` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE;
-
---
--- Constraints for table `cart_items`
---
-ALTER TABLE `cart_items`
-  ADD CONSTRAINT `cart_items_cart_id_foreign` FOREIGN KEY (`cart_id`) REFERENCES `carts` (`id`) ON DELETE CASCADE,
-  ADD CONSTRAINT `cart_items_product_id_foreign` FOREIGN KEY (`product_id`) REFERENCES `products` (`id`) ON DELETE CASCADE,
-  ADD CONSTRAINT `cart_items_product_variant_id_foreign` FOREIGN KEY (`product_variant_id`) REFERENCES `product_variants` (`id`) ON DELETE SET NULL;
-
---
--- Constraints for table `categories`
---
-ALTER TABLE `categories`
-  ADD CONSTRAINT `categories_parent_id_foreign` FOREIGN KEY (`parent_id`) REFERENCES `categories` (`id`) ON DELETE CASCADE;
-
---
--- Constraints for table `coupon_users`
---
-ALTER TABLE `coupon_users`
-  ADD CONSTRAINT `coupon_users_coupon_id_foreign` FOREIGN KEY (`coupon_id`) REFERENCES `coupons` (`id`) ON DELETE CASCADE,
-  ADD CONSTRAINT `coupon_users_user_id_foreign` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE;
-
---
--- Constraints for table `customer_addresses`
---
-ALTER TABLE `customer_addresses`
-  ADD CONSTRAINT `customer_addresses_user_id_foreign` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE;
-
---
--- Constraints for table `orders`
---
-ALTER TABLE `orders`
-  ADD CONSTRAINT `orders_user_id_foreign` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE;
-
---
--- Constraints for table `order_items`
---
-ALTER TABLE `order_items`
-  ADD CONSTRAINT `order_items_order_id_foreign` FOREIGN KEY (`order_id`) REFERENCES `orders` (`id`) ON DELETE CASCADE,
-  ADD CONSTRAINT `order_items_product_id_foreign` FOREIGN KEY (`product_id`) REFERENCES `products` (`id`) ON DELETE CASCADE,
-  ADD CONSTRAINT `order_items_product_variant_id_foreign` FOREIGN KEY (`product_variant_id`) REFERENCES `product_variants` (`id`) ON DELETE CASCADE;
-
---
--- Constraints for table `payments`
---
-ALTER TABLE `payments`
-  ADD CONSTRAINT `payments_order_id_foreign` FOREIGN KEY (`order_id`) REFERENCES `orders` (`id`) ON DELETE CASCADE;
-
---
--- Constraints for table `products`
---
-ALTER TABLE `products`
-  ADD CONSTRAINT `products_category_id_foreign` FOREIGN KEY (`category_id`) REFERENCES `categories` (`id`) ON DELETE SET NULL,
-  ADD CONSTRAINT `products_vendor_id_foreign` FOREIGN KEY (`vendor_id`) REFERENCES `vendors` (`id`) ON DELETE CASCADE;
-
---
--- Constraints for table `product_images`
---
-ALTER TABLE `product_images`
-  ADD CONSTRAINT `product_images_product_id_foreign` FOREIGN KEY (`product_id`) REFERENCES `products` (`id`) ON DELETE CASCADE;
-
---
--- Constraints for table `product_variants`
---
-ALTER TABLE `product_variants`
-  ADD CONSTRAINT `product_variants_product_id_foreign` FOREIGN KEY (`product_id`) REFERENCES `products` (`id`) ON DELETE CASCADE;
-
---
--- Constraints for table `reviews`
---
-ALTER TABLE `reviews`
-  ADD CONSTRAINT `reviews_product_id_foreign` FOREIGN KEY (`product_id`) REFERENCES `products` (`id`) ON DELETE CASCADE,
-  ADD CONSTRAINT `reviews_user_id_foreign` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE;
-
---
--- Constraints for table `vendors`
---
-ALTER TABLE `vendors`
-  ADD CONSTRAINT `vendors_user_id_foreign` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE;
-
---
--- Constraints for table `vendor_reviews`
---
-ALTER TABLE `vendor_reviews`
-  ADD CONSTRAINT `vendor_reviews_user_id_foreign` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE,
-  ADD CONSTRAINT `vendor_reviews_vendor_id_foreign` FOREIGN KEY (`vendor_id`) REFERENCES `vendors` (`id`) ON DELETE CASCADE;
-
---
--- Constraints for table `wishlists`
---
-ALTER TABLE `wishlists`
-  ADD CONSTRAINT `wishlists_product_id_foreign` FOREIGN KEY (`product_id`) REFERENCES `products` (`id`) ON DELETE CASCADE,
-  ADD CONSTRAINT `wishlists_user_id_foreign` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE;
-COMMIT;
-
-/*!40101 SET CHARACTER_SET_CLIENT=@OLD_CHARACTER_SET_CLIENT */;
-/*!40101 SET CHARACTER_SET_RESULTS=@OLD_CHARACTER_SET_RESULTS */;
-/*!40101 SET COLLATION_CONNECTION=@OLD_COLLATION_CONNECTION */;

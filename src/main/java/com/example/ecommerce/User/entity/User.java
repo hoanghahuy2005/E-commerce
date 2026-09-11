@@ -1,16 +1,19 @@
-package com.example.ecommerce.User.entity;
+package com.example.ecommerce.user.entity;
 
 import com.example.ecommerce.common.entity.BaseEntity;
 
 import jakarta.persistence.Entity;
-import jakarta.persistence.Enumerated;
 import jakarta.persistence.Table;
 import lombok.AccessLevel;
+import lombok.Builder;
 import lombok.Getter;
 import lombok.Setter;
 import lombok.experimental.FieldDefaults;
 
-@Entity 
+import java.time.LocalDateTime;
+
+@Entity
+@Builder
 @Table(name = "users")
 @Getter
 @Setter
@@ -20,5 +23,6 @@ public class User extends BaseEntity{
     String email;
     String password;
     Role role;
-    String emailVerifiedAt;
+    boolean isActive;
+    LocalDateTime emailVerifiedAt;
 }

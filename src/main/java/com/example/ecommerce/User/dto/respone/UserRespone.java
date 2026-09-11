@@ -1,9 +1,9 @@
-package com.example.ecommerce.User.dto.respone;
+package com.example.ecommerce.user.dto.respone;
 
 import java.time.LocalDateTime;
 
 
-import com.example.ecommerce.User.entity.Role;
+import com.example.ecommerce.user.entity.Role;
 import lombok.AllArgsConstructor;
 
 import lombok.AccessLevel;

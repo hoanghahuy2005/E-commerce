@@ -1,4 +1,4 @@
-package com.example.ecommerce.User.dto.request;
+package com.example.ecommerce.user.dto.request;
 
 import lombok.AccessLevel;
 import lombok.Getter;
