@@ -10,4 +10,7 @@ import java.util.List;
 public interface CategoryRepository extends JpaRepository<Category, Long> {
     List<Category> findByParentIsNull();
     List<Category> findByParent(Category parent);
+    boolean existsByIgnoreCaseNameAndParentId(String name, Long id);
+    boolean existsByIgnoreCaseNameAndParentIsNull(String name);
+    boolean existsBySlugIgnoreCase(String slug);
 }
