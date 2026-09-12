@@ -2,6 +2,7 @@ package com.example.ecommerce.category.dto.request;
 
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Pattern;
+import jakarta.validation.constraints.Positive;
 import jakarta.validation.constraints.Size;
 import lombok.*;
 import lombok.experimental.FieldDefaults;
@@ -19,5 +20,6 @@ public class CreateCategoryRequest {
             message = "Tên category chỉ được chứa chữ, số, khoảng trắng và dấu -"
     )
     String name;
-    String parentId;
+    @Positive(message = "Parent ID phải lớn hơn 0")
+    Long parentId;
 }

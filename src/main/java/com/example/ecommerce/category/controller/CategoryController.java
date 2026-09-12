@@ -1,9 +1,9 @@
 package com.example.ecommerce.category.controller;
 
 import com.example.ecommerce.category.dto.request.CreateCategoryRequest;
+import com.example.ecommerce.category.dto.request.UpdateCategoryRequest;
 import com.example.ecommerce.category.dto.respone.CategoryDetailRespone;
 import com.example.ecommerce.category.dto.respone.CategoryRespone;
-import com.example.ecommerce.category.entity.Category;
 import com.example.ecommerce.category.service.CategoryService;
 import com.example.ecommerce.common.dto.ApiResponse;
 import jakarta.validation.Valid;
@@ -29,8 +29,8 @@ public class CategoryController {
                 .data(categoryService.findCategory())
                 .build();
     }
-    @GetMapping("/categories/{id}")
-    public ApiResponse<CategoryDetailRespone> findById(@PathVariable String id) {
+    @GetMapping("/admin/categories/{id}")
+    public ApiResponse<CategoryDetailRespone> findById(@PathVariable Long id) {
         CategoryDetailRespone categoryDetailRespone = categoryService.getCategoryDetail(id);
         return ApiResponse.<CategoryDetailRespone>builder()
                 .success(true)
@@ -38,7 +38,7 @@ public class CategoryController {
                 .data(categoryDetailRespone)
                 .build();
     }
-    @PostMapping("/categories")
+    @PostMapping("/admin/categories")
     public ApiResponse<CategoryDetailRespone> createNewCategories(@Valid @RequestBody CreateCategoryRequest createCategoryRequest) {
         CategoryDetailRespone categoryDetailRespone = categoryService.createCategory(createCategoryRequest);
         return ApiResponse.<CategoryDetailRespone>builder()
@@ -48,7 +48,18 @@ public class CategoryController {
                 .build();
     }
 
-    @DeleteMapping("/categories/{id}")
+    @PutMapping("/admin/categories/{id}")
+    public ApiResponse<CategoryDetailRespone> updateCategory(
+            @PathVariable Long id,
+            @Valid @RequestBody UpdateCategoryRequest updateCategoryRequest) {
+        return ApiResponse.<CategoryDetailRespone>builder()
+                .success(true)
+                .message("Đã cập nhật category thành công.")
+                .data(categoryService.updateCategory(id, updateCategoryRequest))
+                .build();
+    }
+
+    @DeleteMapping("/admin/categories/{id}")
     public ApiResponse<Void> deleteCategory(@PathVariable Long id) {
         categoryService.deleteCategory(id);
         return ApiResponse.<Void>builder()
