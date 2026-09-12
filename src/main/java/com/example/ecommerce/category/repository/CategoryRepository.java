@@ -20,6 +20,7 @@ public interface CategoryRepository extends JpaRepository<Category, Long> {
     boolean existsByIgnoreCaseNameAndParentId(String name, Long id);
     boolean existsByIgnoreCaseNameAndParentIsNull(String name);
     boolean existsBySlugIgnoreCase(String slug);
+    boolean existsByParentId(Long parentId);
 
     interface CategoryTreeView {
         Long getId();

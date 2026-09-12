@@ -7,7 +7,10 @@ import com.example.ecommerce.category.entity.Category;
 import com.example.ecommerce.category.mapper.CategoryMapper;
 import com.example.ecommerce.category.repository.CategoryRepository;
 import lombok.RequiredArgsConstructor;
+import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.text.Normalizer;
 import java.util.ArrayList;
@@ -88,6 +91,25 @@ public class CategoryService {
         categoryRepository.save(tmp);
         return categoryMapper.toCategoryRespone(tmp);
     }
+
+    @Transactional
+    public void deleteCategory(Long id){
+        Category category = categoryRepository.findById(id)
+                .orElseThrow(() -> new ResponseStatusException(
+                        HttpStatus.NOT_FOUND,
+                        "Category not found."
+                ));
+
+        if(categoryRepository.existsByParentId(id)){
+            throw new ResponseStatusException(
+                    HttpStatus.CONFLICT,
+                    "Cannot delete category that has child categories."
+            );
+        }
+
+        categoryRepository.delete(category);
+    }
+
     public String getSlug(String name){
         return Normalizer.normalize(name, Normalizer.Form.NFD)
                 .replaceAll("\\p{M}", "")

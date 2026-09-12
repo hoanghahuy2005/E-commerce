@@ -47,4 +47,13 @@ public class CategoryController {
                 .data(categoryDetailRespone)
                 .build();
     }
+
+    @DeleteMapping("/categories/{id}")
+    public ApiResponse<Void> deleteCategory(@PathVariable Long id) {
+        categoryService.deleteCategory(id);
+        return ApiResponse.<Void>builder()
+                .success(true)
+                .message("Đã xóa category thành công.")
+                .build();
+    }
 }
