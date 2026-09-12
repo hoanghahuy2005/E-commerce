@@ -11,7 +11,9 @@ import org.springframework.stereotype.Service;
 
 import java.text.Normalizer;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 @Service
 @RequiredArgsConstructor
@@ -20,12 +22,38 @@ public class CategoryService {
     final CategoryMapper categoryMapper;
 
     public List<CategoryRespone> findCategory(){
-        List<CategoryRespone> categoryRespones = new ArrayList<>();
-        List<Category> categories = categoryRepository.findByParentIsNull();
-        for(Category category : categories){
-            categoryRespones.add(new CategoryRespone(category.getId(), category.getName(), category.getSlug(), getChildrenCategory(category)));
+        List<CategoryRepository.CategoryTreeView> categories = categoryRepository.findAllForTree();
+        Map<Long, CategoryRespone> categoryById = new LinkedHashMap<>();
+
+        for(CategoryRepository.CategoryTreeView category : categories){
+            categoryById.put(
+                    category.getId(),
+                    new CategoryRespone(
+                            category.getId(),
+                            category.getName(),
+                            category.getSlug(),
+                            new ArrayList<>()
+                    )
+            );
         }
-        return categoryRespones;
+
+        List<CategoryRespone> rootCategories = new ArrayList<>();
+        for(CategoryRepository.CategoryTreeView category : categories){
+            CategoryRespone currentCategory = categoryById.get(category.getId());
+            Long parentId = category.getParentId();
+
+            if(parentId == null){
+                rootCategories.add(currentCategory);
+                continue;
+            }
+
+            CategoryRespone parentCategory = categoryById.get(parentId);
+            if(parentCategory != null){
+                parentCategory.getChildren().add(currentCategory);
+            }
+        }
+
+        return rootCategories;
     }
     public CategoryDetailRespone  getCategoryDetail(String id){
         Category ans = categoryRepository.findById(Long.parseLong(id))
@@ -59,25 +87,6 @@ public class CategoryService {
                 .build();
         categoryRepository.save(tmp);
         return categoryMapper.toCategoryRespone(tmp);
-    }
-    public List<CategoryRespone> getChildrenCategory(Category category){
-            List<CategoryRespone> categoryRespones = new ArrayList<>();
-            List<Category> children = categoryRepository.findByParent(category);
-            if(children == null){
-                return null;
-            }
-            else {
-                for(Category child : children){
-                    CategoryRespone childrenRespone = new CategoryRespone();
-                    childrenRespone.setChildren(getChildrenCategory(child));
-                    childrenRespone.setId(child.getId());
-                    childrenRespone.setName(child.getName());
-                    childrenRespone.setSlug(child.getSlug());
-                    categoryRespones.add(childrenRespone);
-
-                }
-            }
-            return categoryRespones;
     }
     public String getSlug(String name){
         return Normalizer.normalize(name, Normalizer.Form.NFD)
