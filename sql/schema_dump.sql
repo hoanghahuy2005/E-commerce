@@ -48,6 +48,8 @@ CREATE TABLE users (
                        name VARCHAR(120) NOT NULL,
                        email VARCHAR(191) NOT NULL,
                        password VARCHAR(255) NOT NULL,
+                       phone_number VARCHAR(30) NULL,
+                       address VARCHAR(500) NULL,
                        role VARCHAR(20) NOT NULL DEFAULT 'CUSTOMER',
                        is_active BOOLEAN NOT NULL DEFAULT TRUE,
                        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,

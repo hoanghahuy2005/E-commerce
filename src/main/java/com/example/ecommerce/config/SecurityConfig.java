@@ -19,7 +19,13 @@ public class SecurityConfig {
         http
                 .csrf(csrf -> csrf.disable())
                 .authorizeHttpRequests(auth -> auth
-                        .requestMatchers("/login", "/api/auth/**", "/api/public/**").permitAll()
+                        .requestMatchers(
+                                "/login",
+                                "/register",
+                                "/auth/register-vendor",
+                                "/api/auth/**",
+                                "/api/public/**"
+                        ).permitAll()
                         .anyRequest().permitAll()
                 )
                 .sessionManagement(session -> session
